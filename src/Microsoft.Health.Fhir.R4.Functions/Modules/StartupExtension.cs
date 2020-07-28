@@ -4,6 +4,9 @@
 // -------------------------------------------------------------------------------------------------
 
 using System;
+using System.Diagnostics;
+using System.Linq;
+using System.Threading.Tasks;
 using EnsureThat;
 using Microsoft.Azure.WebJobs.Host.Config;
 using Microsoft.Extensions.DependencyInjection;
@@ -30,10 +33,14 @@ namespace Microsoft.Health.Fhir.R4.Functions.Modules
                 startable.Start();
             }
 
-            foreach (var initializable in _provider.GetServices<IRequireInitializationOnFirstRequest>())
-            {
-                initializable.EnsureInitialized().GetAwaiter().GetResult();
-            }
+            var initTasks = _provider.GetServices<IRequireInitializationOnFirstRequest>()
+                .Select(x => x.EnsureInitialized())
+                .ToArray();
+
+            Task.WhenAll(initTasks)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .OnCompleted(() => Trace.WriteLine("Functions initialization complete."));
         }
     }
 }

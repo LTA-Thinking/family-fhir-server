@@ -3,17 +3,23 @@
 // Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // -------------------------------------------------------------------------------------------------
 
+using System;
+using System.Reflection;
+using EnsureThat;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
+using Microsoft.Azure.WebJobs.Host.Bindings;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.Health.Extensions.DependencyInjection;
 using Microsoft.Health.Fhir.Api.Configs;
 using Microsoft.Health.Fhir.Api.Features.Routing;
 using Microsoft.Health.Fhir.Api.Modules;
 using Microsoft.Health.Fhir.Core.Features.Routing;
+using Microsoft.Health.Fhir.Core.Registration;
 using Microsoft.Health.Fhir.R4.Functions.Features.IoC;
 using Microsoft.Health.Fhir.R4.Functions.Features.Routing;
 using Microsoft.Health.Fhir.R4.Functions.Modules;
@@ -33,11 +39,22 @@ namespace Microsoft.Health.Fhir.R4.Functions.Modules
             /* Hack to get IConfiguration */
             var serviceProvider = builder.Services.BuildServiceProvider();
             var configurationRoot = serviceProvider.GetService<IConfiguration>();
+            var env = serviceProvider.GetRequiredService<IHostEnvironment>();
+
+            var appDirectory = serviceProvider.GetRequiredService<IOptions<ExecutionContextOptions>>().Value.AppDirectory;
+
+            var configBuilder = new ConfigurationBuilder()
+                .SetBasePath(appDirectory)
+                .AddJsonFile("appsettings.json");
+
+            var customConfig = configBuilder.AddConfiguration(configurationRoot).Build();
 
             services.AddOptions();
+            services.Add<IConfiguration>(x => customConfig).Singleton().ReplaceService<IConfiguration>();
+
             var fhirServerConfiguration = new FhirServerConfiguration();
 
-            configurationRoot?.GetSection(FhirServerConfigurationSectionName).Bind(fhirServerConfiguration);
+            customConfig?.GetSection(FhirServerConfigurationSectionName).Bind(fhirServerConfiguration);
 
             services.AddSingleton(Options.Create(fhirServerConfiguration));
             services.AddSingleton(Options.Create(fhirServerConfiguration.Security));
@@ -67,6 +84,38 @@ namespace Microsoft.Health.Fhir.R4.Functions.Modules
             services.AddHttpClient();
 
             services.Add<StartupExtension>().Transient().AsImplementedInterfaces();
+
+            string dataStore = customConfig["DataStore"];
+            if (dataStore.Equals("CosmosDb", StringComparison.InvariantCultureIgnoreCase))
+            {
+                var fhirBuilder = new FunctionsFhirServerBuilder(services);
+                fhirBuilder.AddCosmosDbCore();
+            }
+        }
+
+        private class FunctionsFhirServerBuilder : IFhirServerBuilder
+        {
+            public FunctionsFhirServerBuilder(IServiceCollection services)
+            {
+                EnsureArg.IsNotNull(services, nameof(services));
+
+                Services = services;
+            }
+
+            public IServiceCollection Services { get; }
+
+            public FunctionsFhirServerBuilder AddCosmosDbCore()
+            {
+                var registrations = typeof(FhirServerBuilderCosmosDbRegistrationExtensions);
+
+                var cosmosCore = registrations.GetMethod("AddCosmosDbPersistence", BindingFlags.Static | BindingFlags.NonPublic);
+                var cosmosSearch = registrations.GetMethod("AddCosmosDbSearch", BindingFlags.Static | BindingFlags.NonPublic);
+
+                cosmosCore.Invoke(null, new object[] { this, null });
+                cosmosSearch.Invoke(null, new object[] { this });
+
+                return this;
+            }
         }
     }
 }
