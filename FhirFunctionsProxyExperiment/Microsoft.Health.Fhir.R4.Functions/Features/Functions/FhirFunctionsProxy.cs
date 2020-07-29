@@ -28,6 +28,21 @@ public static class FhirFunctionsProxy
     private static ApplicationBuilder appBuilder;
     private static Startup startup;
     private static RequestDelegate requestHandler;
+    private static Exception delayedException;
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1810:Initialize reference type static fields inline", Justification = "Function initialization")]
+    static FhirFunctionsProxy()
+    {
+        try
+        {
+            // Exceptions here are hard to track down as its when the function starts up
+            Setup();
+        }
+        catch (Exception ex)
+        {
+            delayedException = ex;
+        }
+    }
 
 #pragma warning disable CA1810 // Initialize reference type static fields inline
     private static void Setup()
@@ -50,8 +65,6 @@ public static class FhirFunctionsProxy
             ContentRootFileProvider = fileProvider,
             WebRootFileProvider = fileProvider,
         };
-
-        var conttents = hostingEnvironment.ContentRootFileProvider.GetDirectoryContents(".");
 
         hostingEnvironment.WebRootFileProvider = hostingEnvironment.ContentRootFileProvider;
 
@@ -84,20 +97,6 @@ public static class FhirFunctionsProxy
 
         appBuilder.UseRouting();
 
-        appBuilder.Use(async (x, y) =>
-        {
-            try
-            {
-                var replace = x.Request.Path.ToString().Replace("/api", string.Empty, StringComparison.OrdinalIgnoreCase);
-                x.Request.Path = new PathString(replace);
-                await y();
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine(ex);
-            }
-        });
-
         appBuilder.UseFhirRequestContext();
 
         /* Configure the HTTP request pipeline */
@@ -124,9 +123,9 @@ public static class FhirFunctionsProxy
     {
         try
         {
-            if (requestHandler == null)
+            if (delayedException != null)
             {
-                Setup();
+                throw delayedException;
             }
 
             log.LogInformation("Handling FHIR Request.");
